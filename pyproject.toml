@@ -1,7 +1,7 @@
 [project]
 name = "sre-agent"
 version = "0.1.0"
-description = "SRE Telegram chat agent querying Prometheus via Grafana"
+description = "SRE Telegram chat agent querying Prometheus via Grafana Dashboard"
 requires-python = ">=3.11"
 dependencies = [
     "python-telegram-bot>=21.0,<22.0",
