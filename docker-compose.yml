@@ -1,0 +1,11 @@
+services:
+  sre-agent:
+    build: .
+    image: sre-agent:latest
+    container_name: sre-agent
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config:/app/config:ro
+    environment:
+      CONFIG_DIR: /app/config
