@@ -43,6 +43,19 @@ async def test_instant_query_success():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_instant_query_uses_per_call_ds():
+    # ds="83" -> proxy theo numeric id, KHÔNG dùng DS gốc (uid/prom)
+    route = respx.get(f"{BASE}/api/datasources/proxy/83/api/v1/query").mock(
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": {"resultType": "vector", "result": []}}
+        )
+    )
+    await _client().instant_query("up", ds="83")
+    assert route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_instant_query_auth_header_sent():
     route = respx.get(f"{PROXY}/query").mock(
         return_value=httpx.Response(

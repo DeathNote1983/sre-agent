@@ -12,7 +12,9 @@ def _inst_selector(ip: str) -> str:
     return f'instance=~"{ip}(:.*)?"'
 
 
-async def get_host_metrics(client: GrafanaClient, ip: str, range_: str = "5m") -> dict[str, Any]:
+async def get_host_metrics(
+    client: GrafanaClient, ip: str, range_: str = "5m", ds: str | None = None
+) -> dict[str, Any]:
     """Trả về dict metrics + raw để LLM hiểu context."""
     sel = _inst_selector(ip)
 
@@ -32,12 +34,12 @@ async def get_host_metrics(client: GrafanaClient, ip: str, range_: str = "5m") -
     cpu_count_q = f'count by (instance) (node_cpu_seconds_total{{mode="idle",{sel}}})'
 
     cpu_r, ram_r, disk_r, io_r, load_r, cpu_cnt_r = await asyncio.gather(
-        client.instant_query(cpu_q),
-        client.instant_query(ram_q),
-        client.instant_query(disk_q),
-        client.instant_query(io_q),
-        client.instant_query(load1_q),
-        client.instant_query(cpu_count_q),
+        client.instant_query(cpu_q, ds=ds),
+        client.instant_query(ram_q, ds=ds),
+        client.instant_query(disk_q, ds=ds),
+        client.instant_query(io_q, ds=ds),
+        client.instant_query(load1_q, ds=ds),
+        client.instant_query(cpu_count_q, ds=ds),
     )
 
     cpu_pct = first_scalar(cpu_r)

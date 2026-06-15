@@ -19,11 +19,9 @@ def thresholds() -> Thresholds:
                 "disk_io_util": {"warn": 70, "crit": 90},
                 "load_per_cpu": {"warn": 1.5, "crit": 3.0},
             },
-            "pxc": {
-                "wsrep_local_state_ok": 4,
-                "cluster_size_min": 3,
-                "queue_avg": {"warn": 10, "crit": 50},
-                "flow_control_paused_pct": {"warn": 5, "crit": 20},
+            "mysql": {
+                "connections_pct": {"warn": 80, "crit": 90},
+                "replication_lag_sec": {"warn": 30, "crit": 300},
             },
             "redis": {
                 "used_memory_pct": {"warn": 80, "crit": 90},

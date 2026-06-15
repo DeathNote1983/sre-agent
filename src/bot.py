@@ -61,7 +61,12 @@ def build_app(settings: AppSettings) -> Application:
         user=settings.grafana_user,
         password=settings.grafana_password,
     )
-    tool_ctx = ToolContext(client=grafana, thresholds=settings.thresholds)
+    tool_ctx = ToolContext(
+        client=grafana,
+        thresholds=settings.thresholds,
+        clusters=settings.clusters,
+        datasources=settings.datasources,
+    )
     sessions = SessionStore(idle_seconds=settings.session_idle_minutes * 60)
 
     app = Application.builder().token(settings.telegram_bot_token).build()
@@ -101,7 +106,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Chào anh 👋\n\n"
         "Tôi là SRE assistant. Anh có thể hỏi tôi về:\n"
         "• Tình trạng 1 host theo IP, vd: `10.1.2.3 thế nào?`\n"
-        "• Tình trạng 1 cluster, vd: `cluster pxc-prod-1 còn ổn không?`\n"
+        "• Tình trạng 1 cluster, vd: `Dev Mysql Cluster còn ổn không?`\n"
         "• Cluster Redis: `redis cache-main`\n\n"
         "Commands: /reset (xóa context), /help",
         parse_mode=ParseMode.MARKDOWN,
@@ -115,7 +120,7 @@ async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hỗ trợ:\n"
         "• Linux host: CPU/RAM/Disk/IO/Load\n"
-        "• Percona XtraDB Cluster: size, wsrep state, flow-control\n"
+        "• MySQL (mysql_exporter): up/down, connections, replication (lag, IO/SQL)\n"
         "• Redis Cluster: cluster_state, slots, memory, eviction\n\n"
         "Cứ nhập IP hoặc tên cluster, hỏi câu hỏi tự nhiên."
     )

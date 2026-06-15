@@ -16,15 +16,13 @@ linux:
     warn: 1.5
     crit: 3.0
 
-pxc:
-  wsrep_local_state_ok: 4   # 4 = Synced
-  cluster_size_min: 3
-  queue_avg:
-    warn: 10
-    crit: 50
-  flow_control_paused_pct:
-    warn: 5
-    crit: 20
+mysql:
+  connections_pct:        # threads_connected / max_connections * 100
+    warn: 80
+    crit: 90
+  replication_lag_sec:    # seconds_behind_master (slave)
+    warn: 30
+    crit: 300
 
 redis:
   used_memory_pct:

@@ -1,0 +1,6 @@
+# Mapping loại metrics (tech) -> Grafana datasource id (hoặc uid).
+# Mỗi tool tự chọn DS theo loại data. Tech không khai báo -> dùng GRAFANA_DS_UID mặc định.
+datasources:
+  host: 104     # node_exporter — resource server (CPU/RAM/disk)
+  mysql: 83     # mysql_exporter — database MySQL
+  redis: 35     # redis_exporter — đổi nếu redis nằm ở datasource khác

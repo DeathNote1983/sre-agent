@@ -86,58 +86,58 @@ def _linux_suggestion(status: Status, reasons: list[str], metrics: dict) -> str 
     return "; ".join(hints) if hints else "Cần theo dõi sát, kiểm tra workload bất thường"
 
 
-def assess_pxc(metrics: dict, t: Thresholds) -> dict:
-    """metrics: {size, primary_count, nodes: [{ip, wsrep_local_state, queue_avg}], flow_control_paused_pct, max_lag}."""
-    pt = t.pxc
+def assess_mysql(metrics: dict, t: Thresholds) -> dict:
+    """metrics: {nodes: [{ip, up, role, connections_pct, slave_io_running, slave_sql_running, seconds_behind_master}]}."""
+    mt = t.mysql
     reasons: list[str] = []
     status: Status = "OK"
 
-    size = int(metrics.get("size") or 0)
-    if size < pt.cluster_size_min:
-        reasons.append(f"Cluster size {size} < min {pt.cluster_size_min}")
-        status = _worse(status, "CRIT")
-
-    primary = int(metrics.get("primary_count") or 0)
-    if primary != size and size > 0:
-        reasons.append(f"Chỉ {primary}/{size} node trong PRIMARY component")
-        status = _worse(status, "CRIT")
-
-    for n in metrics.get("nodes") or []:
-        state = n.get("wsrep_local_state")
-        if state is not None and int(state) != pt.wsrep_local_state_ok:
-            reasons.append(
-                f"Node {n.get('ip')} wsrep_local_state={state} (≠ {pt.wsrep_local_state_ok} Synced)"
-            )
+    nodes = metrics.get("nodes") or []
+    for n in nodes:
+        ip = n.get("ip")
+        if n.get("up") == 0:
+            reasons.append(f"Node {ip} MySQL DOWN")
             status = _worse(status, "CRIT")
-        q = float(n.get("queue_avg") or 0)
-        s = _bound(q, pt.queue_avg.warn, pt.queue_avg.crit)
-        if s != "OK":
-            reasons.append(f"Node {n.get('ip')} queue_avg={q:.1f}")
-        status = _worse(status, s)
+            continue
 
-    fc = float(metrics.get("flow_control_paused_pct") or 0)
-    s = _bound(fc, pt.flow_control_paused_pct.warn, pt.flow_control_paused_pct.crit)
-    if s != "OK":
-        reasons.append(f"Flow-control paused {fc:.1f}%")
-    status = _worse(status, s)
+        cpct = n.get("connections_pct")
+        if cpct is not None:
+            s = _bound(float(cpct), mt.connections_pct.warn, mt.connections_pct.crit)
+            if s != "OK":
+                reasons.append(f"Node {ip} connections {float(cpct):.0f}%")
+            status = _worse(status, s)
 
-    suggestion = _pxc_suggestion(status, metrics)
+        if n.get("role") == "slave":
+            if n.get("slave_io_running") == 0 or n.get("slave_sql_running") == 0:
+                reasons.append(f"Node {ip} replication NOT running (IO/SQL)")
+                status = _worse(status, "CRIT")
+            lag = n.get("seconds_behind_master")
+            if lag is not None:
+                s = _bound(float(lag), mt.replication_lag_sec.warn, mt.replication_lag_sec.crit)
+                if s != "OK":
+                    reasons.append(f"Node {ip} replication lag {float(lag):.0f}s")
+                status = _worse(status, s)
+
+    suggestion = _mysql_suggestion(status, nodes)
     return {"status": status, "reasons": reasons, "suggestion": suggestion}
 
 
-def _pxc_suggestion(status: Status, metrics: dict) -> str | None:
+def _mysql_suggestion(status: Status, nodes: list[dict]) -> str | None:
     if status == "OK":
         return None
     hints: list[str] = []
-    fc = float(metrics.get("flow_control_paused_pct") or 0)
-    if fc >= 20:
-        hints.append("Flow-control cao — có node chậm, kiểm tra IO/CPU node yếu nhất hoặc tăng wsrep_slave_threads")
-    for n in metrics.get("nodes") or []:
-        if n.get("wsrep_local_state") is not None and int(n["wsrep_local_state"]) != 4:
-            hints.append(f"Node {n.get('ip')} chưa Synced — check log, SST/IST progress")
-    if int(metrics.get("primary_count") or 0) < int(metrics.get("size") or 0):
-        hints.append("Có node rớt PRIMARY — risk split-brain, cần intervene gấp")
-    return "; ".join(hints) if hints else "Theo dõi cluster sát"
+    for n in nodes:
+        ip = n.get("ip")
+        if n.get("up") == 0:
+            hints.append(f"Node {ip} down — kiểm tra mysqld service + error log")
+        if n.get("role") == "slave" and (
+            n.get("slave_io_running") == 0 or n.get("slave_sql_running") == 0
+        ):
+            hints.append(f"Node {ip} replication dừng — SHOW SLAVE STATUS, xem IO/SQL thread error")
+        cpct = n.get("connections_pct")
+        if cpct is not None and float(cpct) >= 90:
+            hints.append(f"Node {ip} connections sát max — tăng max_connections hoặc check connection leak")
+    return "; ".join(hints) if hints else "Theo dõi MySQL sát"
 
 
 def assess_redis(metrics: dict, t: Thresholds) -> dict:
@@ -194,12 +194,12 @@ def _redis_suggestion(status: Status, metrics: dict) -> str | None:
 
 
 def assess(metrics: dict, tech: str, thresholds: Thresholds) -> dict:
-    """Dispatcher theo tech: linux | pxc | redis."""
+    """Dispatcher theo tech: linux | mysql | redis."""
     tech = tech.lower()
     if tech == "linux":
         return assess_linux(metrics, thresholds)
-    if tech == "pxc":
-        return assess_pxc(metrics, thresholds)
+    if tech == "mysql":
+        return assess_mysql(metrics, thresholds)
     if tech == "redis":
         return assess_redis(metrics, thresholds)
     return {

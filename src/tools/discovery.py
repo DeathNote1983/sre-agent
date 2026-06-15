@@ -8,7 +8,7 @@ Quy ước labels (chuẩn của hệ thống monitor Zalopay):
 
 Map job → tech:
   node            → linux
-  mysqld / pxc    → pxc
+  mysqld / mysql  → mysql
   redis           → redis
 """
 from __future__ import annotations
@@ -16,14 +16,16 @@ from __future__ import annotations
 import ipaddress
 from typing import Any
 
+from src.config import ClusterMap
 from src.grafana_client import GrafanaClient
 
 _JOB_TO_TECH = {
     "node": "linux",
     "node_exporter": "linux",
-    "mysqld": "pxc",
-    "pxc": "pxc",
-    "percona": "pxc",
+    "mysqld": "mysql",
+    "mysql": "mysql",
+    "percona": "mysql",
+    "pxc": "mysql",
     "redis": "redis",
     "redis_exporter": "redis",
 }
@@ -37,15 +39,17 @@ def _is_ip(value: str) -> bool:
         return False
 
 
-async def find_target(client: GrafanaClient, query: str) -> dict[str, Any]:
+async def find_target(
+    client: GrafanaClient, query: str, clusters: ClusterMap | None = None
+) -> dict[str, Any]:
     """Search Prometheus series cho query (IP hoặc cluster name).
 
     Trả về:
         {
           "type": "host" | "cluster" | "unknown",
-          "tech": "linux" | "pxc" | "redis" | None,
+          "tech": "linux" | "mysql" | "redis" | None,
           "members": [{"ip": "...", "role": "...", "cluster": "..."}],
-          "match": "exact" | "partial" | "none",
+          "match": "exact" | "partial" | "mapped" | "none",
           "query": <input>
         }
     """
@@ -55,7 +59,7 @@ async def find_target(client: GrafanaClient, query: str) -> dict[str, Any]:
 
     if _is_ip(q):
         return await _find_by_ip(client, q)
-    return await _find_by_cluster(client, q)
+    return await _find_by_cluster(client, q, clusters)
 
 
 async def _find_by_ip(client: GrafanaClient, ip: str) -> dict[str, Any]:
@@ -78,9 +82,9 @@ async def _find_by_ip(client: GrafanaClient, ip: str) -> dict[str, Any]:
         if not role and s.get("role"):
             role = s["role"]
 
-    # Ưu tiên tech cluster (pxc/redis) hơn linux nếu có
+    # Ưu tiên tech cluster (mysql/redis) hơn linux nếu có
     chosen = None
-    for pref in ("pxc", "redis", "linux"):
+    for pref in ("mysql", "redis", "linux"):
         if pref in techs:
             chosen = pref
             break
@@ -94,7 +98,25 @@ async def _find_by_ip(client: GrafanaClient, ip: str) -> dict[str, Any]:
     }
 
 
-async def _find_by_cluster(client: GrafanaClient, name: str) -> dict[str, Any]:
+async def _find_by_cluster(
+    client: GrafanaClient, name: str, clusters: ClusterMap | None = None
+) -> dict[str, Any]:
+    # Mapping tĩnh (config/clusters.yaml) override Prometheus nếu tên khớp.
+    if clusters is not None:
+        mapped = clusters.resolve(name)
+        if mapped:
+            return {
+                "type": "cluster",
+                "tech": mapped.tech,
+                "members": [
+                    {"ip": ip, "role": None, "cluster": mapped.name}
+                    for ip in mapped.members
+                ],
+                "match": "mapped",
+                "query": name,
+                "cluster_name": mapped.name,
+            }
+
     # Thử exact trước
     series = await client.series(f'{{cluster="{name}"}}')
     match = "exact"
@@ -126,7 +148,7 @@ async def _find_by_cluster(client: GrafanaClient, name: str) -> dict[str, Any]:
             m["role"] = s["role"]
 
     chosen = None
-    for pref in ("pxc", "redis", "linux"):
+    for pref in ("mysql", "redis", "linux"):
         if pref in techs:
             chosen = pref
             break

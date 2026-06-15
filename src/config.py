@@ -26,11 +26,9 @@ class LinuxThresholds(BaseModel):
     load_per_cpu: WarnCrit
 
 
-class PxcThresholds(BaseModel):
-    wsrep_local_state_ok: int = 4
-    cluster_size_min: int = 3
-    queue_avg: WarnCrit
-    flow_control_paused_pct: WarnCrit
+class MysqlThresholds(BaseModel):
+    connections_pct: WarnCrit       # threads_connected / max_connections * 100
+    replication_lag_sec: WarnCrit   # mysql_slave_status_seconds_behind_master
 
 
 class RedisThresholds(BaseModel):
@@ -42,7 +40,7 @@ class RedisThresholds(BaseModel):
 
 class Thresholds(BaseModel):
     linux: LinuxThresholds
-    pxc: PxcThresholds
+    mysql: MysqlThresholds
     redis: RedisThresholds
 
 
@@ -51,6 +49,44 @@ class Whitelist(BaseModel):
 
     def allows(self, user_id: int) -> bool:
         return user_id in self.users
+
+
+class ClusterDef(BaseModel):
+    name: str
+    tech: Literal["linux", "mysql", "redis"]
+    members: list[str] = Field(default_factory=list)  # danh sách IP thành viên
+
+
+class ClusterMap(BaseModel):
+    """Mapping tên cluster thân thiện → tech + IPs (config/clusters.yaml)."""
+
+    clusters: list[ClusterDef] = Field(default_factory=list)
+
+    def resolve(self, query: str) -> ClusterDef | None:
+        """Tìm cluster theo tên: exact (không phân biệt hoa thường) trước, rồi substring."""
+        q = (query or "").strip().lower()
+        if not q:
+            return None
+        for c in self.clusters:
+            if c.name.lower() == q:
+                return c
+        for c in self.clusters:
+            if q in c.name.lower():
+                return c
+        return None
+
+
+class DatasourceMap(BaseModel):
+    """Mapping loại metrics (tech) -> Grafana datasource id/uid (config/datasources.yaml).
+
+    Vd: {"host": "104", "mysql": "83", "redis": "83"} — host = node_exporter (resource),
+    mysql/redis = database exporter.
+    """
+
+    datasources: dict[str, str | int] = Field(default_factory=dict)
+
+    def ds_for(self, tech: str, default: str) -> str:
+        return str(self.datasources.get(tech) or default)
 
 
 class AppSettings(BaseModel):
@@ -68,6 +104,8 @@ class AppSettings(BaseModel):
     config_dir: Path = Path("./config")
     thresholds: Thresholds
     whitelist: Whitelist
+    clusters: ClusterMap = Field(default_factory=ClusterMap)
+    datasources: DatasourceMap = Field(default_factory=DatasourceMap)
 
 
 def _require(name: str) -> str:
@@ -102,6 +140,14 @@ def load_settings(config_dir: Path | None = None) -> AppSettings:
     try:
         thresholds = Thresholds(**_load_yaml(cfg_dir / "thresholds.yaml"))
         whitelist = Whitelist(**_load_yaml(cfg_dir / "whitelist.yaml"))
+        clusters_path = cfg_dir / "clusters.yaml"
+        clusters = (
+            ClusterMap(**_load_yaml(clusters_path)) if clusters_path.is_file() else ClusterMap()
+        )
+        ds_path = cfg_dir / "datasources.yaml"
+        datasources = (
+            DatasourceMap(**_load_yaml(ds_path)) if ds_path.is_file() else DatasourceMap()
+        )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid config: {exc}") from exc
 
@@ -128,4 +174,6 @@ def load_settings(config_dir: Path | None = None) -> AppSettings:
         config_dir=cfg_dir,
         thresholds=thresholds,
         whitelist=whitelist,
+        clusters=clusters,
+        datasources=datasources,
     )

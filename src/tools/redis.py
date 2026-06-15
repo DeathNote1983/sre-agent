@@ -10,12 +10,23 @@ from typing import Any
 from src.grafana_client import GrafanaClient, first_scalar, to_label_map
 
 
-def _sel(cluster: str) -> str:
+def _sel(cluster: str, member_ips: list[str] | None = None) -> str:
+    # Có danh sách IP (từ mapping) -> lọc theo instance; ngược lại theo label cluster.
+    # KHÔNG escape '.' — PromQL string literal không cho '\.'; dot regex khớp IP là đủ
+    # (giống host._inst_selector).
+    if member_ips:
+        pat = "|".join(member_ips)
+        return f'instance=~"({pat})(:.*)?"'
     return f'cluster="{cluster}"'
 
 
-async def get_redis_cluster(client: GrafanaClient, cluster_name: str) -> dict[str, Any]:
-    sel = _sel(cluster_name)
+async def get_redis_cluster(
+    client: GrafanaClient,
+    cluster_name: str,
+    member_ips: list[str] | None = None,
+    ds: str | None = None,
+) -> dict[str, Any]:
+    sel = _sel(cluster_name, member_ips)
 
     role_q = f'redis_instance_info{{{sel}}}'  # labels chứa role=master|slave
     mem_pct_q = (
@@ -30,14 +41,14 @@ async def get_redis_cluster(client: GrafanaClient, cluster_name: str) -> dict[st
     master_link_q = f'redis_master_link_up{{{sel}}}'  # exporter expose này khi slave
 
     role_r, mem_r, cs_r, slots_r, ops_r, evict_r, link_r, ml_r = await asyncio.gather(
-        client.instant_query(role_q),
-        client.instant_query(mem_pct_q),
-        client.instant_query(cluster_state_q),
-        client.instant_query(slots_q),
-        client.instant_query(ops_q),
-        client.instant_query(evict_q),
-        client.instant_query(link_q),
-        client.instant_query(master_link_q),
+        client.instant_query(role_q, ds=ds),
+        client.instant_query(mem_pct_q, ds=ds),
+        client.instant_query(cluster_state_q, ds=ds),
+        client.instant_query(slots_q, ds=ds),
+        client.instant_query(ops_q, ds=ds),
+        client.instant_query(evict_q, ds=ds),
+        client.instant_query(link_q, ds=ds),
+        client.instant_query(master_link_q, ds=ds),
     )
 
     mem_by_instance = {labels.get("instance", "?"): val for labels, val in to_label_map(mem_r)}

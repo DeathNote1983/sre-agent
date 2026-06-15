@@ -9,16 +9,17 @@ Mỗi tool gồm:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from src.config import Thresholds
+from src.config import ClusterMap, DatasourceMap, Thresholds
 from src.grafana_client import GrafanaClient
 
 from . import assess as assess_mod
 from . import discovery as discovery_mod
 from . import host as host_mod
-from . import pxc as pxc_mod
+from . import mysql as mysql_mod
 from . import redis as redis_mod
 
 
@@ -26,25 +27,62 @@ from . import redis as redis_mod
 class ToolContext:
     client: GrafanaClient
     thresholds: Thresholds
+    clusters: ClusterMap = field(default_factory=ClusterMap)
+    datasources: DatasourceMap = field(default_factory=DatasourceMap)
 
 
 Handler = Callable[..., Awaitable[dict[str, Any]]]
 
 
+async def _attach_resources(
+    ctx: ToolContext, db_result: dict[str, Any], host_ds: str
+) -> dict[str, Any]:
+    """Đính kèm resource (host metrics DS resource) + verdict linux cho TỪNG node DB."""
+    nodes = db_result.get("nodes") or []
+    ips = [n.get("ip") for n in nodes if n.get("ip")]
+    if not ips:
+        return db_result
+    metrics = await asyncio.gather(
+        *(host_mod.get_host_metrics(ctx.client, ip, ds=host_ds) for ip in ips),
+        return_exceptions=True,
+    )
+    by_ip = dict(zip(ips, metrics))
+    for n in nodes:
+        m = by_ip.get(n.get("ip"))
+        if isinstance(m, Exception) or m is None:
+            n["resource"] = None
+            n["resource_assessment"] = None
+        else:
+            n["resource"] = m
+            n["resource_assessment"] = assess_mod.assess_linux(m, ctx.thresholds)
+    return db_result
+
+
 async def _find_target(ctx: ToolContext, query: str) -> dict[str, Any]:
-    return await discovery_mod.find_target(ctx.client, query)
+    return await discovery_mod.find_target(ctx.client, query, ctx.clusters)
 
 
 async def _get_host_metrics(ctx: ToolContext, ip: str, range: str = "5m") -> dict[str, Any]:
-    return await host_mod.get_host_metrics(ctx.client, ip, range)
+    ds = ctx.datasources.ds_for("host", ctx.client.ds_uid)
+    return await host_mod.get_host_metrics(ctx.client, ip, range, ds=ds)
 
 
-async def _get_pxc_cluster(ctx: ToolContext, cluster_name: str) -> dict[str, Any]:
-    return await pxc_mod.get_pxc_cluster(ctx.client, cluster_name)
+async def _get_mysql_cluster(ctx: ToolContext, cluster_name: str) -> dict[str, Any]:
+    mapped = ctx.clusters.resolve(cluster_name)
+    member_ips = mapped.members if mapped else None
+    db_ds = ctx.datasources.ds_for("mysql", ctx.client.ds_uid)
+    host_ds = ctx.datasources.ds_for("host", ctx.client.ds_uid)
+    result = await mysql_mod.get_mysql_cluster(ctx.client, cluster_name, member_ips, ds=db_ds)
+    return await _attach_resources(ctx, result, host_ds)
 
 
 async def _get_redis_cluster(ctx: ToolContext, cluster_name: str) -> dict[str, Any]:
-    return await redis_mod.get_redis_cluster(ctx.client, cluster_name)
+    mapped = ctx.clusters.resolve(cluster_name)
+    member_ips = mapped.members if mapped else None
+    db_ds = ctx.datasources.ds_for("redis", ctx.client.ds_uid)
+    host_ds = ctx.datasources.ds_for("host", ctx.client.ds_uid)
+    result = await redis_mod.get_redis_cluster(ctx.client, cluster_name, member_ips, ds=db_ds)
+    return await _attach_resources(ctx, result, host_ds)
 
 
 async def _assess(ctx: ToolContext, metrics: dict, tech: str) -> dict[str, Any]:
@@ -55,7 +93,7 @@ async def _assess(ctx: ToolContext, metrics: dict, tech: str) -> dict[str, Any]:
 _HANDLERS: dict[str, Handler] = {
     "find_target": _find_target,
     "get_host_metrics": _get_host_metrics,
-    "get_pxc_cluster": _get_pxc_cluster,
+    "get_mysql_cluster": _get_mysql_cluster,
     "get_redis_cluster": _get_redis_cluster,
     "assess": _assess,
 }
@@ -68,7 +106,7 @@ OPENAI_TOOLS: list[dict] = [
             "name": "find_target",
             "description": (
                 "Tìm host hoặc cluster theo IP hoặc tên cluster. "
-                "PHẢI gọi đầu tiên trước khi dùng các tool khác để biết tech (linux/pxc/redis) "
+                "PHẢI gọi đầu tiên trước khi dùng các tool khác để biết tech (linux/mysql/redis) "
                 "và danh sách node."
             ),
             "parameters": {
@@ -76,7 +114,7 @@ OPENAI_TOOLS: list[dict] = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "IP (vd '10.1.2.3') hoặc tên cluster (vd 'pxc-prod-1').",
+                        "description": "IP (vd '10.1.2.3') hoặc tên cluster (vd 'Dev Mysql Cluster').",
                     }
                 },
                 "required": ["query"],
@@ -105,8 +143,8 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_pxc_cluster",
-            "description": "Lấy topology + health của Percona XtraDB Cluster theo cluster name.",
+            "name": "get_mysql_cluster",
+            "description": "Lấy health MySQL (mysql_exporter) theo cluster name: up/down, connections, replication (IO/SQL running + lag). TỰ kèm resource (CPU/RAM/disk) từng node.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -136,7 +174,7 @@ OPENAI_TOOLS: list[dict] = [
             "name": "assess",
             "description": (
                 "Đánh giá metrics → status (OK/WARN/CRIT) + reasons + suggestion. "
-                "Truyền vào output của các tool get_* và tech tương ứng (linux/pxc/redis). "
+                "Truyền vào output của các tool get_* và tech tương ứng (linux/mysql/redis). "
                 "LLM phải dùng kết quả của tool này để kết luận, KHÔNG tự suy đoán status."
             ),
             "parameters": {
@@ -144,12 +182,12 @@ OPENAI_TOOLS: list[dict] = [
                 "properties": {
                     "metrics": {
                         "type": "object",
-                        "description": "Dict metrics lấy từ get_host_metrics / get_pxc_cluster / get_redis_cluster.",
+                        "description": "Dict metrics lấy từ get_host_metrics / get_mysql_cluster / get_redis_cluster.",
                         "additionalProperties": True,
                     },
                     "tech": {
                         "type": "string",
-                        "enum": ["linux", "pxc", "redis"],
+                        "enum": ["linux", "mysql", "redis"],
                     },
                 },
                 "required": ["metrics", "tech"],

@@ -1,0 +1,17 @@
+# Mapping tên cluster thân thiện -> tech + danh sách IP thành viên.
+# Dùng khi tên cluster KHÔNG trùng giá trị label `cluster` trong Prometheus.
+# Khi hỏi về cluster (khớp substring, không phân biệt hoa thường), bot lấy thông tin
+# toàn bộ server trong members. tech: redis | mysql | linux.
+clusters:
+  - name: "Dev Redis Cluster"
+    tech: redis
+    members:
+      - 10.60.59.2
+      - 10.60.59.3
+      - 10.60.59.4
+  - name: "Dev Mysql Cluster"
+    tech: mysql
+    members:
+      - 10.30.88.2
+      - 10.30.88.3
+      - 10.103.2.9

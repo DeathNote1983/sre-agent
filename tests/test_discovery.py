@@ -5,6 +5,7 @@ import httpx
 import pytest
 import respx
 
+from src.config import ClusterDef, ClusterMap
 from src.grafana_client import GrafanaClient
 from src.tools.discovery import find_target
 
@@ -16,6 +17,26 @@ PROXY = f"{BASE}/api/datasources/proxy/uid/{DS_UID}/api/v1"
 
 def _client() -> GrafanaClient:
     return GrafanaClient(base_url=BASE, ds_uid=DS_UID, token="t0k", timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_find_target_mapping_override():
+    """Tên cluster khớp mapping (substring) -> trả mapped, KHÔNG gọi Prometheus."""
+    cmap = ClusterMap(
+        clusters=[
+            ClusterDef(
+                name="Promotion Redis Cluster",
+                tech="redis",
+                members=["10.60.59.2", "10.60.59.3", "10.60.59.4"],
+            )
+        ]
+    )
+    out = await find_target(_client(), "promotion", cmap)
+    assert out["type"] == "cluster"
+    assert out["tech"] == "redis"
+    assert out["match"] == "mapped"
+    assert out["cluster_name"] == "Promotion Redis Cluster"
+    assert [m["ip"] for m in out["members"]] == ["10.60.59.2", "10.60.59.3", "10.60.59.4"]
 
 
 @respx.mock
@@ -40,7 +61,7 @@ async def test_find_by_ip_returns_host_with_tech():
     )
     out = await find_target(_client(), "10.0.0.1")
     assert out["type"] == "host"
-    assert out["tech"] == "pxc"  # ưu tiên hơn linux
+    assert out["tech"] == "mysql"  # ưu tiên hơn linux
     assert out["members"][0]["ip"] == "10.0.0.1"
     assert out["members"][0]["cluster"] == "pxc-prod-1"
 

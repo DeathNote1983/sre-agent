@@ -61,61 +61,70 @@ def test_linux_load_per_cpu_crit(thresholds):
     assert out["status"] == "CRIT"
 
 
-# ---------- PXC ----------
+# ---------- MySQL ----------
 
-def _pxc_base() -> dict:
+def _mysql_base() -> dict:
     return {
-        "size": 3,
-        "primary_count": 3,
         "nodes": [
-            {"ip": f"10.0.0.{i}", "wsrep_local_state": 4, "queue_avg": 0.0}
-            for i in (1, 2, 3)
+            {"ip": "10.0.0.1", "up": 1, "role": "master", "connections_pct": 20.0,
+             "slave_io_running": None, "slave_sql_running": None, "seconds_behind_master": None},
+            {"ip": "10.0.0.2", "up": 1, "role": "slave", "connections_pct": 30.0,
+             "slave_io_running": 1, "slave_sql_running": 1, "seconds_behind_master": 2.0},
         ],
-        "flow_control_paused_pct": 0.5,
     }
 
 
-def test_pxc_all_ok(thresholds):
-    out = assess(_pxc_base(), "pxc", thresholds)
+def test_mysql_all_ok(thresholds):
+    out = assess(_mysql_base(), "mysql", thresholds)
     assert out["status"] == "OK"
     assert out["reasons"] == []
 
 
-def test_pxc_size_below_min_crit(thresholds):
-    m = _pxc_base() | {"size": 2, "primary_count": 2,
-                       "nodes": [{"ip": "10.0.0.1", "wsrep_local_state": 4, "queue_avg": 0}]}
-    out = assess(m, "pxc", thresholds)
+def test_mysql_node_down_crit(thresholds):
+    m = _mysql_base()
+    m["nodes"][0]["up"] = 0
+    out = assess(m, "mysql", thresholds)
     assert out["status"] == "CRIT"
-    assert any("size" in r.lower() for r in out["reasons"])
+    assert any("DOWN" in r for r in out["reasons"])
 
 
-def test_pxc_node_not_synced_crit(thresholds):
-    m = _pxc_base()
-    m["nodes"][1]["wsrep_local_state"] = 2  # Donor/Desynced
-    out = assess(m, "pxc", thresholds)
-    assert out["status"] == "CRIT"
-    assert any("wsrep_local_state" in r for r in out["reasons"])
-
-
-def test_pxc_flow_control_warn(thresholds):
-    m = _pxc_base() | {"flow_control_paused_pct": 10.0}
-    out = assess(m, "pxc", thresholds)
+def test_mysql_connections_warn(thresholds):
+    m = _mysql_base()
+    m["nodes"][0]["connections_pct"] = 85.0
+    out = assess(m, "mysql", thresholds)
     assert out["status"] == "WARN"
-    assert any("Flow-control" in r for r in out["reasons"])
+    assert any("connections" in r.lower() for r in out["reasons"])
 
 
-def test_pxc_queue_crit(thresholds):
-    m = _pxc_base()
-    m["nodes"][0]["queue_avg"] = 100.0
-    out = assess(m, "pxc", thresholds)
+def test_mysql_connections_crit(thresholds):
+    m = _mysql_base()
+    m["nodes"][0]["connections_pct"] = 95.0
+    out = assess(m, "mysql", thresholds)
     assert out["status"] == "CRIT"
+    assert out["suggestion"] is not None
 
 
-def test_pxc_primary_split_crit(thresholds):
-    m = _pxc_base() | {"primary_count": 2}
-    out = assess(m, "pxc", thresholds)
+def test_mysql_replication_not_running_crit(thresholds):
+    m = _mysql_base()
+    m["nodes"][1]["slave_sql_running"] = 0
+    out = assess(m, "mysql", thresholds)
     assert out["status"] == "CRIT"
-    assert any("PRIMARY" in r for r in out["reasons"])
+    assert any("replication" in r.lower() for r in out["reasons"])
+
+
+def test_mysql_replication_lag_warn(thresholds):
+    m = _mysql_base()
+    m["nodes"][1]["seconds_behind_master"] = 60.0
+    out = assess(m, "mysql", thresholds)
+    assert out["status"] == "WARN"
+    assert any("lag" in r.lower() for r in out["reasons"])
+
+
+def test_mysql_replication_lag_crit(thresholds):
+    m = _mysql_base()
+    m["nodes"][1]["seconds_behind_master"] = 600.0
+    out = assess(m, "mysql", thresholds)
+    assert out["status"] == "CRIT"
 
 
 # ---------- Redis ----------

@@ -25,14 +25,13 @@ class GrafanaClient:
     # session cookie lấy từ POST /login, tái dùng cho các call sau (re-login khi 401)
     _session_cookie: str | None = field(default=None, init=False, repr=False, compare=False)
 
-    @property
-    def _proxy_root(self) -> str:
+    def _proxy_root(self, ds: str | None = None) -> str:
         # Grafana datasource proxy:
         #   - numeric id -> /api/datasources/proxy/<id>/api/v1       (Grafana 7.x)
         #   - string uid -> /api/datasources/proxy/uid/<uid>/api/v1  (Grafana 9+)
-        # GRAFANA_DS_UID có thể là id dạng số ("104") hoặc uid dạng chuỗi.
-        ds = str(self.ds_uid)
-        seg = ds if ds.isdigit() else f"uid/{ds}"
+        # ds có thể là id số ("104") hoặc uid chuỗi; None -> DS gốc (self.ds_uid).
+        d = str(ds or self.ds_uid)
+        seg = d if d.isdigit() else f"uid/{d}"
         return f"{self.base_url}/api/datasources/proxy/{seg}/api/v1"
 
     async def _login(self) -> None:
@@ -54,8 +53,10 @@ class GrafanaClient:
             raise GrafanaError("Grafana login không trả về cookie grafana_session")
         self._session_cookie = cookie
 
-    async def _get(self, path: str, params: dict[str, Any], _retry: bool = True) -> dict:
-        url = f"{self._proxy_root}{path}"
+    async def _get(
+        self, path: str, params: dict[str, Any], ds: str | None = None, _retry: bool = True
+    ) -> dict:
+        url = f"{self._proxy_root(ds)}{path}"
         headers = {"Accept": "application/json"}
 
         if self.user and self.password:
@@ -73,7 +74,7 @@ class GrafanaClient:
         if resp.status_code == 401 and self.user and self.password and _retry:
             self._session_cookie = None
             await self._login()
-            return await self._get(path, params, _retry=False)
+            return await self._get(path, params, ds=ds, _retry=False)
 
         if resp.status_code != 200:
             raise GrafanaError(
@@ -84,36 +85,39 @@ class GrafanaClient:
             raise GrafanaError(f"Prometheus error: {body.get('error') or body}")
         return body.get("data", {})
 
-    async def instant_query(self, promql: str) -> list[dict]:
+    async def instant_query(self, promql: str, ds: str | None = None) -> list[dict]:
         """Query instant. Trả về list[{metric: {...}, value: [ts, val_str]}]."""
-        data = await self._get("/query", {"query": promql})
+        data = await self._get("/query", {"query": promql}, ds=ds)
         if data.get("resultType") not in ("vector", "scalar"):
             return []
         return data.get("result", [])
 
     async def range_query(
-        self, promql: str, start: float, end: float, step: str = "60s"
+        self, promql: str, start: float, end: float, step: str = "60s", ds: str | None = None
     ) -> list[dict]:
         """Query range. Trả về list[{metric: {...}, values: [[ts, val_str], ...]}]."""
         data = await self._get(
             "/query_range",
             {"query": promql, "start": start, "end": end, "step": step},
+            ds=ds,
         )
         return data.get("result", [])
 
-    async def label_values(self, label: str, match: str | None = None) -> list[str]:
+    async def label_values(
+        self, label: str, match: str | None = None, ds: str | None = None
+    ) -> list[str]:
         """Lấy giá trị của 1 label, optional match[] series selector."""
         params: dict[str, Any] = {}
         if match:
             params["match[]"] = match
-        data = await self._get(f"/label/{label}/values", params)
+        data = await self._get(f"/label/{label}/values", params, ds=ds)
         if isinstance(data, list):
             return data
         return []
 
-    async def series(self, match: str) -> list[dict[str, str]]:
+    async def series(self, match: str, ds: str | None = None) -> list[dict[str, str]]:
         """Lấy series metadata match selector."""
-        data = await self._get("/series", {"match[]": match})
+        data = await self._get("/series", {"match[]": match}, ds=ds)
         if isinstance(data, list):
             return data
         return []
