@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -18,25 +18,63 @@ class GrafanaError(RuntimeError):
 class GrafanaClient:
     base_url: str            # https://grafana.internal/...
     ds_uid: str              # datasource UID, vd "prometheus"
-    token: str
+    token: str | None = None       # API key (Bearer) — dùng khi không có user/password
+    user: str | None = None        # form-login user (ưu tiên hơn token nếu có cả password)
+    password: str | None = None    # form-login password
     timeout: float = 15.0
+    # session cookie lấy từ POST /login, tái dùng cho các call sau (re-login khi 401)
+    _session_cookie: str | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def _proxy_root(self) -> str:
-        # Grafana datasource proxy v9+: /api/datasources/proxy/uid/<uid>/api/v1
-        return f"{self.base_url}/api/datasources/proxy/uid/{self.ds_uid}/api/v1"
+        # Grafana datasource proxy:
+        #   - numeric id -> /api/datasources/proxy/<id>/api/v1       (Grafana 7.x)
+        #   - string uid -> /api/datasources/proxy/uid/<uid>/api/v1  (Grafana 9+)
+        # GRAFANA_DS_UID có thể là id dạng số ("104") hoặc uid dạng chuỗi.
+        ds = str(self.ds_uid)
+        seg = ds if ds.isdigit() else f"uid/{ds}"
+        return f"{self.base_url}/api/datasources/proxy/{seg}/api/v1"
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-        }
+    async def _login(self) -> None:
+        """Đăng nhập form-login Grafana bằng user/password → lưu grafana_session cookie.
 
-    async def _get(self, path: str, params: dict[str, Any]) -> dict:
-        url = f"{self._proxy_root}{path}"
+        Dùng khi Grafana tắt basic auth / API key nhưng vẫn cho đăng nhập bằng
+        username + password như browser. Cookie được tái dùng cho các call sau.
+        """
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, params=params, headers=self._headers)
+            resp = await client.post(
+                f"{self.base_url}/login",
+                json={"user": self.user, "password": self.password},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+        if resp.status_code != 200:
+            raise GrafanaError(f"Grafana login {resp.status_code}: {resp.text[:200]}")
+        cookie = resp.cookies.get("grafana_session")
+        if not cookie:
+            raise GrafanaError("Grafana login không trả về cookie grafana_session")
+        self._session_cookie = cookie
+
+    async def _get(self, path: str, params: dict[str, Any], _retry: bool = True) -> dict:
+        url = f"{self._proxy_root}{path}"
+        headers = {"Accept": "application/json"}
+
+        if self.user and self.password:
+            # Ưu tiên session login (user/pass). Login lazily nếu chưa có cookie.
+            if not self._session_cookie:
+                await self._login()
+            headers["Cookie"] = f"grafana_session={self._session_cookie}"
+        elif self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url, params=params, headers=headers)
+
+        # Session hết hạn → login lại và thử đúng 1 lần
+        if resp.status_code == 401 and self.user and self.password and _retry:
+            self._session_cookie = None
+            await self._login()
+            return await self._get(path, params, _retry=False)
+
         if resp.status_code != 200:
             raise GrafanaError(
                 f"Grafana {resp.status_code} for {path}: {resp.text[:200]}"

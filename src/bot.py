@@ -51,11 +51,15 @@ class SessionStore:
 
 def build_app(settings: AppSettings) -> Application:
     """Tạo Telegram Application với handlers + bot_data."""
-    openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    openai_client = AsyncOpenAI(
+        api_key=settings.llm_api_key, base_url=settings.llm_base_url
+    )
     grafana = GrafanaClient(
         base_url=settings.grafana_url,
         ds_uid=settings.grafana_ds_uid,
         token=settings.grafana_token,
+        user=settings.grafana_user,
+        password=settings.grafana_password,
     )
     tool_ctx = ToolContext(client=grafana, thresholds=settings.thresholds)
     sessions = SessionStore(idle_seconds=settings.session_idle_minutes * 60)
@@ -141,7 +145,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     sessions: SessionStore = context.bot_data["sessions"]
     openai_client: AsyncOpenAI = context.bot_data["openai_client"]
     tool_ctx: ToolContext = context.bot_data["tool_ctx"]
-    model = settings.openai_model
+    model = settings.llm_model
 
     sess = sessions.get(update.effective_user.id)
     sess.messages.append({"role": "user", "content": update.message.text})

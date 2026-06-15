@@ -1,5 +1,5 @@
 # Telegram user IDs được phép dùng bot.
 # Lấy user_id bằng cách nhắn @userinfobot hoặc xem log bot khi gửi message lần đầu.
 users:
-  - 123456789   # Duy Luan (placeholder)
+  - 7517515783   # Duy Luan (placeholder)
   # - 987654321 # tên SRE khác

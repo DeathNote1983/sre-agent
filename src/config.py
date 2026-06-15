@@ -55,10 +55,13 @@ class Whitelist(BaseModel):
 
 class AppSettings(BaseModel):
     grafana_url: str
-    grafana_token: str
     grafana_ds_uid: str
-    openai_api_key: str
-    openai_model: str = "gpt-4o"
+    grafana_token: str | None = None
+    grafana_user: str | None = None
+    grafana_password: str | None = None
+    llm_api_key: str
+    llm_base_url: str | None = None
+    llm_model: str = "gpt-4o"
     telegram_bot_token: str
     log_level: str = "INFO"
     session_idle_minutes: int = 30
@@ -71,6 +74,14 @@ def _require(name: str) -> str:
     val = os.environ.get(name)
     if not val:
         raise RuntimeError(f"Missing env var: {name}")
+    return val
+
+
+def _require_llm_key() -> str:
+    """Ưu tiên LLM_API_KEY (GreenNode AIP); fallback OPENAI_API_KEY cho tương thích."""
+    val = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not val:
+        raise RuntimeError("Missing env var: LLM_API_KEY")
     return val
 
 
@@ -94,12 +105,23 @@ def load_settings(config_dir: Path | None = None) -> AppSettings:
     except ValidationError as exc:
         raise RuntimeError(f"Invalid config: {exc}") from exc
 
+    grafana_user = os.environ.get("GRAFANA_USER")
+    grafana_password = os.environ.get("GRAFANA_PASSWORD")
+    grafana_token = os.environ.get("GRAFANA_TOKEN")
+    if not ((grafana_user and grafana_password) or grafana_token):
+        raise RuntimeError(
+            "Cần GRAFANA_USER + GRAFANA_PASSWORD (session login) hoặc GRAFANA_TOKEN (API key)"
+        )
+
     return AppSettings(
         grafana_url=_require("GRAFANA_URL").rstrip("/"),
-        grafana_token=_require("GRAFANA_TOKEN"),
         grafana_ds_uid=_require("GRAFANA_DS_UID"),
-        openai_api_key=_require("OPENAI_API_KEY"),
-        openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
+        grafana_token=grafana_token,
+        grafana_user=grafana_user,
+        grafana_password=grafana_password,
+        llm_api_key=_require_llm_key(),
+        llm_base_url=os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
+        llm_model=os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o"),
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         session_idle_minutes=int(os.environ.get("SESSION_IDLE_MINUTES", "30")),

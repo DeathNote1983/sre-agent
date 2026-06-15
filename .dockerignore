@@ -1,0 +1,23 @@
+# Secrets / credentials — KHÔNG bao giờ đưa vào image
+.env
+.env.*
+.greennode.json
+.agentbase/
+
+# Virtualenv / build artifacts
+.venv/
+venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Test / cache
+.pytest_cache/
+tests/
+
+# VCS / tooling
+.git/
+.gitignore
+.dockerignore
+.claude/
+docker-compose.yml
