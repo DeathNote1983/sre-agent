@@ -98,6 +98,8 @@ class AppSettings(BaseModel):
     llm_api_key: str
     llm_base_url: str | None = None
     llm_model: str = "gpt-4o"
+    memory_id: str | None = None
+    memory_strategy_id: str | None = None
     telegram_bot_token: str
     log_level: str = "INFO"
     session_idle_minutes: int = 30
@@ -168,6 +170,8 @@ def load_settings(config_dir: Path | None = None) -> AppSettings:
         llm_api_key=_require_llm_key(),
         llm_base_url=os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
         llm_model=os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o"),
+        memory_id=os.environ.get("MEMORY_ID"),
+        memory_strategy_id=os.environ.get("MEMORY_STRATEGY_ID"),
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         session_idle_minutes=int(os.environ.get("SESSION_IDLE_MINUTES", "30")),

@@ -1,10 +1,8 @@
-"""Telegram bot handlers, auth, session manager."""
+"""Telegram bot handlers, auth, memory-backed conversation."""
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any
 
 from openai import AsyncOpenAI
 from telegram import Update
@@ -20,33 +18,17 @@ from telegram.ext import (
 from src.agent import SYSTEM_PROMPT, run_agent
 from src.config import AppSettings
 from src.grafana_client import GrafanaClient
+from src.memory_store import AgentMemory
 from src.tools import ToolContext
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class Session:
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    last_active: float = field(default_factory=time.time)
+_DEFAULT_SESSION = "main"
 
 
-class SessionStore:
-    def __init__(self, idle_seconds: int):
-        self._idle = idle_seconds
-        self._data: dict[int, Session] = {}
-
-    def get(self, user_id: int) -> Session:
-        sess = self._data.get(user_id)
-        now = time.time()
-        if sess is None or (now - sess.last_active) > self._idle:
-            sess = Session(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
-            self._data[user_id] = sess
-        sess.last_active = now
-        return sess
-
-    def reset(self, user_id: int) -> None:
-        self._data.pop(user_id, None)
+def _session_id(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
+    """Session hiện tại của user (mặc định 'main'; /reset đổi sang session mới)."""
+    return context.bot_data.get("session_ids", {}).get(user_id, _DEFAULT_SESSION)
 
 
 def build_app(settings: AppSettings) -> Application:
@@ -67,7 +49,7 @@ def build_app(settings: AppSettings) -> Application:
         clusters=settings.clusters,
         datasources=settings.datasources,
     )
-    sessions = SessionStore(idle_seconds=settings.session_idle_minutes * 60)
+    memory = AgentMemory(settings.memory_id, settings.memory_strategy_id)
 
     app = Application.builder().token(settings.telegram_bot_token).build()
 
@@ -75,7 +57,8 @@ def build_app(settings: AppSettings) -> Application:
     app.bot_data["settings"] = settings
     app.bot_data["openai_client"] = openai_client
     app.bot_data["tool_ctx"] = tool_ctx
-    app.bot_data["sessions"] = sessions
+    app.bot_data["memory"] = memory
+    app.bot_data["session_ids"] = {}  # user_id -> session_id hiện tại (/reset đổi)
 
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("reset", on_reset))
@@ -130,9 +113,9 @@ async def on_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: AppSettings = context.bot_data["settings"]
     if not _is_authorized(update, settings):
         return
-    sessions: SessionStore = context.bot_data["sessions"]
-    sessions.reset(update.effective_user.id)
-    await update.message.reply_text("Đã xóa context. Bắt đầu lại nhé.")
+    # Đổi sang session mới → quên lịch sử hội thoại gần đây (facts long-term vẫn giữ).
+    context.bot_data.setdefault("session_ids", {})[update.effective_user.id] = f"s{int(time.time())}"
+    await update.message.reply_text("Đã xóa context hội thoại. Bắt đầu lại nhé.")
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -147,22 +130,34 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Bạn chưa nằm trong whitelist.")
         return
 
-    sessions: SessionStore = context.bot_data["sessions"]
+    memory: AgentMemory = context.bot_data["memory"]
     openai_client: AsyncOpenAI = context.bot_data["openai_client"]
     tool_ctx: ToolContext = context.bot_data["tool_ctx"]
     model = settings.llm_model
 
-    sess = sessions.get(update.effective_user.id)
-    sess.messages.append({"role": "user", "content": update.message.text})
+    user_id = update.effective_user.id
+    actor = str(user_id)
+    session = _session_id(context, user_id)
+    text = update.message.text
 
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
 
+    # Lịch sử hội thoại (sống qua restart) + facts long-term liên quan của user
+    history = await memory.load_history(actor, session)
+    facts = await memory.recall(actor, text)
+    system = SYSTEM_PROMPT
+    if facts:
+        system += "\n\n# Ghi nhớ về user/hệ thống (long-term memory):\n- " + "\n- ".join(facts)
+    messages = [
+        {"role": "system", "content": system},
+        *history,
+        {"role": "user", "content": text},
+    ]
+
     try:
-        reply, sess.messages = await run_agent(
-            openai_client, model, sess.messages, tool_ctx
-        )
+        reply, _ = await run_agent(openai_client, model, messages, tool_ctx)
     except Exception:
         logger.exception("agent failed")
         await update.message.reply_text(
@@ -172,6 +167,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # Telegram MarkdownV2 yêu cầu escape phức tạp → dùng plain text cho an toàn
     await update.message.reply_text(reply or "(không có nội dung trả lời)")
+
+    # Lưu lượt hội thoại vào memory (auto-extract facts theo strategy SEMANTIC)
+    await memory.append_turn(actor, session, "user", text)
+    await memory.append_turn(actor, session, "assistant", reply or "")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
